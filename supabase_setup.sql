@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS as_is_functions (
   professionals_cost     NUMERIC     DEFAULT 0,
   target_headcount       NUMERIC,
   target_budget          NUMERIC,
+  parent_id              TEXT,
   created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
