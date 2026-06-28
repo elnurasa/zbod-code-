@@ -546,13 +546,25 @@ async function migrateLocalStorageToSupabase() {
   const ais  = getAsIs();
   const results = { divisions: 0, workshops: 0, functions: 0, asIs: 0, landingBoxes: 0 };
 
-  if (divs.length > 0 || ws.length > 0 || fns.length > 0 || ais.length > 0) {
-    const ok = await sb.sbSyncAll(divs, ws, fns, ais);
+  // Filter out orphaned records whose parent no longer exists in localStorage.
+  // This can happen when divisions/workshops were deleted but their child
+  // records were not cleaned up (pre-existing localStorage leak).
+  const wsIds  = new Set(ws.map(w => w.id));
+  const divIds = new Set(divs.map(d => d.id));
+  const validFns = fns.filter(f => wsIds.has(f.workshop_id));
+  const validAis = ais.filter(f => divIds.has(f.division_id));
+  if (fns.length !== validFns.length)
+    console.log(`Migration: skipping ${fns.length - validFns.length} orphaned function(s) referencing deleted workshops.`);
+  if (ais.length !== validAis.length)
+    console.log(`Migration: skipping ${ais.length - validAis.length} orphaned as-is function(s) referencing deleted divisions.`);
+
+  if (divs.length > 0 || ws.length > 0 || validFns.length > 0 || validAis.length > 0) {
+    const ok = await sb.sbSyncAll(divs, ws, validFns, validAis);
     if (ok) {
       results.divisions = divs.length;
       results.workshops = ws.length;
-      results.functions = fns.length;
-      results.asIs      = ais.length;
+      results.functions = validFns.length;
+      results.asIs      = validAis.length;
     } else {
       return { ok: false, error: 'Core data upload failed. Check the browser console.' };
     }
