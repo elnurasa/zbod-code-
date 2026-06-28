@@ -198,7 +198,10 @@ function updDiv(id, updates) {
 }
 function delDiv(id) {
   lsSet(LS.divisions, getDivs().filter(d => d.id !== id));
-  if (window.zbodSupabase) window.zbodSupabase.sbDeleteDivision(id);
+  if (window.zbodSupabase) {
+    window.zbodSupabase.sbDeleteDivision(id);
+    window.zbodSupabase.sbDeleteLandingBox('aaa_cards_' + id);
+  }
 }
 
 function getWs() { return lsGet(LS.workshops, []); }
@@ -455,6 +458,183 @@ async function loadFromSupabase() {
     console.log('Supabase data loaded and merged');
   } catch (e) {
     console.warn('Failed to load from Supabase:', e);
+  }
+}
+
+// ═══════════════════════════════════════════
+// MIGRATION: localStorage → Supabase (one-time)
+// ═══════════════════════════════════════════
+function buildLandingBoxesFromLocalStorage() {
+  const boxes = [];
+  const cards = getAAACards();
+
+  const landing = lsGet(LS.landing, null);
+  if (landing && (landing.overviewTitle || landing.overviewText)) {
+    boxes.push({ box_id: 'overview', title: landing.overviewTitle || '', content: landing.overviewText || '', position_order: 0 });
+  }
+
+  const guidelineTitle = lsGet('zbod_guideline_title', null);
+  if (guidelineTitle) boxes.push({ box_id: 'guideline_title', title: guidelineTitle, content: '', position_order: 0 });
+
+  const guidelines = lsGet('zbod_guidelines', null);
+  if (guidelines && Array.isArray(guidelines)) {
+    guidelines.forEach((g, i) => boxes.push({ box_id: g.id || `gl${i+1}`, title: g.title || '', content: g.text || '', position_order: i + 1 }));
+  }
+
+  const problems = lsGet('zbod_problems', null);
+  if (problems && Array.isArray(problems)) {
+    boxes.push({ box_id: 'problems', title: lsGet('zbod_problems_title', 'PROBLEM STATEMENT'), content: JSON.stringify(problems), position_order: 99 });
+  }
+
+  const questionsTitle = lsGet('zbod_questions_title', null);
+  if (questionsTitle) boxes.push({ box_id: 'questions_title', title: questionsTitle, content: '', position_order: 195 });
+
+  const questions = lsGet('zbod_questions', null);
+  if (questions && Array.isArray(questions)) {
+    questions.forEach((q, i) => boxes.push({ box_id: q.id || `mq${i+1}`, title: q.label || '', content: q.text || '', position_order: 200 + i }));
+  }
+
+  const quote = lsGet('zbod_quote', null);
+  if (quote !== null) boxes.push({ box_id: 'quote', title: 'Strategic Quote', content: quote, position_order: 300 });
+
+  const strategicTitle = lsGet('zbod_strategic_title', null);
+  if (strategicTitle) boxes.push({ box_id: 'strategic_title', title: strategicTitle, content: '', position_order: 395 });
+
+  const strategic = lsGet('zbod_strategic', null);
+  if (strategic && Array.isArray(strategic)) {
+    strategic.forEach((s, i) => boxes.push({ box_id: s.id || `sq${i+1}`, title: s.label || '', content: s.text || '', position_order: 400 + i }));
+  }
+
+  const fcmatrix = lsGet('zbod_fcmatrix', null);
+  if (fcmatrix && Array.isArray(fcmatrix)) {
+    boxes.push({ box_id: 'fcmatrix', title: lsGet('zbod_fcmatrix_title', 'FUNCTION CATEGORIZATION MATRIX'), content: JSON.stringify(fcmatrix), position_order: 600 });
+  }
+
+  const support = lsGet('zbod_support', null);
+  if (support && Array.isArray(support)) {
+    boxes.push({ box_id: 'support', title: lsGet('zbod_support_title', 'SUPPORT FUNCTIONS'), content: JSON.stringify(support), position_order: 700 });
+  }
+
+  const principles = lsGet('zbod_principles', null);
+  if (principles && Array.isArray(principles)) {
+    boxes.push({ box_id: 'principles', title: lsGet('zbod_principles_title', 'CORE PRINCIPLES'), content: JSON.stringify(principles), position_order: 500 });
+  }
+
+  const strategicOverview = lsGet('zbod_strategic_overview', null);
+  if (strategicOverview && typeof strategicOverview === 'object') {
+    boxes.push({ box_id: 'strategic_overview', title: strategicOverview.title || 'STRATEGIC OVERVIEW', content: JSON.stringify(strategicOverview), position_order: 800 });
+  }
+
+  if (cards && typeof cards === 'object') {
+    Object.keys(cards).forEach(divId => {
+      if (cards[divId] && Array.isArray(cards[divId])) {
+        boxes.push({ box_id: 'aaa_cards_' + divId, title: 'AAA Cards', content: JSON.stringify(cards[divId]), position_order: 9000 });
+      }
+    });
+  }
+
+  return boxes;
+}
+
+async function migrateLocalStorageToSupabase() {
+  const sb = window.zbodSupabase;
+  if (!sb || !sb.supabaseAvailable) return { ok: false, error: 'Supabase not connected' };
+
+  const divs = getDivs();
+  const ws   = getWs();
+  const fns  = getFns();
+  const ais  = getAsIs();
+  const results = { divisions: 0, workshops: 0, functions: 0, asIs: 0, landingBoxes: 0 };
+
+  if (divs.length > 0 || ws.length > 0 || fns.length > 0 || ais.length > 0) {
+    const ok = await sb.sbSyncAll(divs, ws, fns, ais);
+    if (ok) {
+      results.divisions = divs.length;
+      results.workshops = ws.length;
+      results.functions = fns.length;
+      results.asIs      = ais.length;
+    } else {
+      return { ok: false, error: 'Core data upload failed. Check the browser console.' };
+    }
+  }
+
+  const boxes = buildLandingBoxesFromLocalStorage();
+  for (const box of boxes) {
+    const res = await sb.sbSaveLandingBox(box);
+    if (res !== null) results.landingBoxes++;
+  }
+
+  return { ok: true, results };
+}
+
+function showMigrationBanner() {
+  if (document.getElementById('zbod-migration-banner')) return;
+  const divs = getDivs();
+  const ws   = getWs();
+  const fns  = getFns();
+  const ais  = getAsIs();
+  const boxes = buildLandingBoxesFromLocalStorage();
+
+  const banner = document.createElement('div');
+  banner.id = 'zbod-migration-banner';
+  banner.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+  banner.innerHTML = `
+    <div style="background:#1a1a2e;border:1px solid #3b3b5c;border-radius:12px;padding:32px 36px;max-width:480px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <h2 style="margin:0;font-size:17px;color:#e2e2f0;font-weight:600;">Migrate Data to Supabase</h2>
+      </div>
+      <p style="margin:0 0 14px;color:#9999bb;font-size:13px;line-height:1.6;">
+        Your browser contains data that has not yet been synced to the cloud database. Migrating will make this data available to all users and across all browsers — nothing will be deleted from your browser.
+      </p>
+      <div style="background:#12122a;border-radius:8px;padding:12px 16px;margin-bottom:18px;font-size:13px;color:#aaaacc;line-height:1.8;">
+        ${divs.length   > 0 ? `<div>• ${divs.length} division${divs.length !== 1 ? 's' : ''}</div>` : ''}
+        ${ws.length     > 0 ? `<div>• ${ws.length} workshop${ws.length !== 1 ? 's' : ''}</div>` : ''}
+        ${fns.length    > 0 ? `<div>• ${fns.length} function${fns.length !== 1 ? 's' : ''}</div>` : ''}
+        ${ais.length    > 0 ? `<div>• ${ais.length} as-is function${ais.length !== 1 ? 's' : ''}</div>` : ''}
+        ${boxes.length  > 0 ? `<div>• ${boxes.length} landing page content block${boxes.length !== 1 ? 's' : ''}</div>` : ''}
+      </div>
+      <div id="zbod-migration-status" style="display:none;margin-bottom:14px;font-size:13px;"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button id="zbod-migration-skip" onclick="dismissMigrationBanner()" style="padding:8px 18px;border-radius:6px;border:1px solid #3b3b5c;background:transparent;color:#9999bb;cursor:pointer;font-size:13px;">Skip for now</button>
+        <button id="zbod-migration-btn"  onclick="runMigration()"         style="padding:8px 20px;border-radius:6px;border:none;background:#6366f1;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Migrate to Supabase</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(banner);
+}
+
+function dismissMigrationBanner() {
+  const el = document.getElementById('zbod-migration-banner');
+  if (el) el.remove();
+}
+
+async function runMigration() {
+  const btn    = document.getElementById('zbod-migration-btn');
+  const skip   = document.getElementById('zbod-migration-skip');
+  const status = document.getElementById('zbod-migration-status');
+  if (btn)  { btn.disabled = true; btn.textContent = 'Migrating…'; btn.style.opacity = '0.7'; }
+  if (skip) skip.style.display = 'none';
+  if (status) { status.style.display = 'block'; status.style.color = '#6366f1'; status.textContent = 'Uploading — please wait…'; }
+
+  const { ok, results, error } = await migrateLocalStorageToSupabase();
+
+  if (ok) {
+    const r = results;
+    const lines = [];
+    if (r.divisions  > 0) lines.push(`${r.divisions} division${r.divisions !== 1 ? 's' : ''}`);
+    if (r.workshops  > 0) lines.push(`${r.workshops} workshop${r.workshops !== 1 ? 's' : ''}`);
+    if (r.functions  > 0) lines.push(`${r.functions} function${r.functions !== 1 ? 's' : ''}`);
+    if (r.asIs       > 0) lines.push(`${r.asIs} as-is function${r.asIs !== 1 ? 's' : ''}`);
+    if (r.landingBoxes > 0) lines.push(`${r.landingBoxes} content block${r.landingBoxes !== 1 ? 's' : ''}`);
+    if (status) { status.style.color = '#22c55e'; status.textContent = 'Complete: ' + (lines.join(', ') || 'all data') + ' synced to Supabase.'; }
+    lsSet('zbod_sb_migrated', true);
+    toast('Data migrated to Supabase successfully', { type: 'success' });
+    setTimeout(dismissMigrationBanner, 2200);
+  } else {
+    if (status) { status.style.color = '#ef4444'; status.textContent = error || 'Migration failed — check the browser console.'; }
+    if (btn)  { btn.disabled = false; btn.textContent = 'Retry'; btn.style.opacity = '1'; }
+    if (skip) skip.style.display = 'block';
   }
 }
 
@@ -3868,7 +4048,24 @@ const app = {
     }
   },
 
-  deleteDivision(id) { if (confirm('Delete this structure? All data will be removed.')) { delDiv(id); delAsIsByDivision(id); delWsByDivision(id); renderDivisions(); toast('Structure deleted'); } },
+  deleteDivision(id) {
+    if (confirm('Delete this structure? All data will be removed.')) {
+      // Clean up workshop functions in localStorage (workshops are removed by delWsByDivision)
+      const divWsIds = new Set(getWs().filter(w => w.division_id === id).map(w => w.id));
+      if (divWsIds.size > 0) {
+        lsSet(LS.functions, getFns().filter(f => !divWsIds.has(f.workshop_id)));
+      }
+      // Clean up AAA cards for this division in localStorage
+      const cards = getAAACards();
+      if (cards[id]) { delete cards[id]; lsSet(LS.aaaCards, cards); }
+      // Remove division, as-is functions, and workshops from localStorage + sync to Supabase
+      delDiv(id);
+      delAsIsByDivision(id);
+      delWsByDivision(id);
+      renderDivisions();
+      toast('Structure deleted');
+    }
+  },
 
   editDivisionData() {
     const div = getDivs().find(d => d.id === state.selectedDivisionId);
@@ -5068,6 +5265,15 @@ const app = {
   // === INIT ===
   async init() {
     await loadFromSupabase();
+
+    // Show one-time migration banner when Supabase is live and browser has unsynced data
+    const sb = window.zbodSupabase;
+    if (sb && sb.supabaseAvailable && !lsGet('zbod_sb_migrated', false)) {
+      const hasCoreData    = getDivs().length > 0 || getWs().length > 0 || getFns().length > 0 || getAsIs().length > 0;
+      const hasLandingData = buildLandingBoxesFromLocalStorage().length > 0;
+      if (hasCoreData || hasLandingData) showMigrationBanner();
+    }
+
     const h = window.location.hash.slice(1);
     if (h === 'divisions') { showPage('divisions'); renderDivisions(); }
     else { showPage('landing'); renderLanding(); }
